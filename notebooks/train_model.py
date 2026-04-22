@@ -99,7 +99,7 @@ print("Encodeurs et metadata sauvegardes.")
 model_loaded = joblib.load("models/model.pkl")
 le_sexe_loaded = joblib.load("models/encoder_sexe.pkl")
 le_region_loaded = joblib.load("models/encoder_region.pkl")
-print(f"Modele recharge : {type(model_loaded)._name_}")
+print(f"Modele recharge : {type(model_loaded).__name__}")
 print(f"Classes : {list(model_loaded.classes_)}")
 
 # Un nouveau patient arrive au centre de sante de Medina
