@@ -31,6 +31,17 @@ app = FastAPI(
     description="Assistant pré-diagnostic médical pour le Sénégal",
     version="0.2.0"
 )
+from fastapi.middleware.cors import CORSMiddleware
+
+# Configuration du Middleware CORS
+# Note : allow_origins=["*"] est idéal pour le développement local
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],      # Autorise toutes les origines
+    allow_credentials=True,   # Autorise l'envoi de cookies/auth
+    allow_methods=["*"],      # Autorise toutes les méthodes (GET, POST, etc.)
+    allow_headers=["*"],      # Autorise tous les headers
+)
 
 # Route de base : vérifier que l'API fonctionne
 @app.get("/health")
@@ -120,3 +131,12 @@ def predict(patient: PatientInput):
         confiance=confiance,
         message=messages.get(diagnostic, "Consultez un médecin.")
     )  
+@app.get("/model-info")
+def get_model_info():
+    # En supposant que ton modèle s'appelle 'model'
+    return {
+        "model_type": "RandomForestClassifier",
+        "n_estimators": model.n_estimators,
+        "classes": model.classes_.tolist(),
+        "n_features": model.n_features_in_
+    }
