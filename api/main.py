@@ -1,12 +1,52 @@
 # api/main.py
 # API FastAPI pour SenSante - Assistant pré-diagnostic médical
-
-from fastapi import FastAPI
-# api/schemas.py
+import os
+import joblib
+import numpy as np
+from dotenv import load_dotenv
+from groq import Groq
 from pydantic import BaseModel, Field
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
-# --- Schemas Pydantic ---
+# =========================================================
+# 1. INITIALISATION (Variables d'environnement & Groq)
+# =========================================================
+# Charger les variables d'environnement
+load_dotenv()
 
+# Initialisation du client Groq (chargé au démarrage)
+groq_client = None
+groq_api_key = os.getenv("GROQ_API_KEY")
+
+if groq_api_key:
+    groq_client = Groq(api_key=groq_api_key)
+    print("Client Groq initialisé.")
+else:
+    print("ATTENTION : GROQ_API_KEY non trouvée. /explain sera désactivé.")
+
+# =========================================================
+# 2. CHARGEMENT DU MODÈLE DE MACHINE LEARNING
+# =========================================================
+print("Chargement du modele ...")
+try:
+    model = joblib.load("models/model.pkl")
+    le_sexe = joblib.load("models/encoder_sexe.pkl")
+    le_region = joblib.load("models/encoder_region.pkl")
+    feature_cols = joblib.load("models/feature_cols.pkl")
+    print(f"Modèle chargé : {type(model).__name__}")
+    print(f"Classes : {list(model.classes_)}")
+except Exception as e:
+    print(f"ERREUR : Impossible de charger les modèles. {e}")
+    model = None
+    le_sexe = None
+    le_region = None
+
+# =========================================================
+# 3. SCHÉMAS PYDANTIC
+# =========================================================
+
+# --- Schémas pour la prédiction (ML) ---
 class PatientInput(BaseModel):
     """Données d'entrée : les symptômes d'un patient."""
     age: int = Field(..., ge=0, le=120, description="Age en années")
@@ -25,16 +65,33 @@ class DiagnosticOutput(BaseModel):
     confiance: str = Field(..., description="Niveau de confiance")
     message: str = Field(..., description="Recommandation")
 
+# --- Schémas pour l'explication (LLM) ---
+class ExplainInput(BaseModel):
+    diagnostic: str = Field(..., description="Diagnostic prédit par le modèle")
+    probabilite: float = Field(..., description="Probabilité du diagnostic")
+    age: int = Field(...)
+    sexe: str = Field(...)
+    temperature: float = Field(...)
+    region: str = Field(...)
+
+class ExplainOutput(BaseModel):
+    explication: str = Field(..., description="Explication en français")
+    modele_llm: str = Field(
+        default="llama-3.1-8b-instant",
+        description="Modèle LLM utilisé"
+    )
+
+# =========================================================
+# 4. CONFIGURATION DE L'APPLICATION FASTAPI
+# =========================================================
 # Créer l'application
 app = FastAPI(
     title="SenSante API",
     description="Assistant pré-diagnostic médical pour le Sénégal",
     version="0.2.0"
 )
-from fastapi.middleware.cors import CORSMiddleware
 
 # Configuration du Middleware CORS
-# Note : allow_origins=["*"] est idéal pour le développement local
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],      # Autorise toutes les origines
@@ -42,6 +99,10 @@ app.add_middleware(
     allow_methods=["*"],      # Autorise toutes les méthodes (GET, POST, etc.)
     allow_headers=["*"],      # Autorise tous les headers
 )
+
+# =========================================================
+# 5. ROUTES DE L'API
+# =========================================================
 
 # Route de base : vérifier que l'API fonctionne
 @app.get("/health")
@@ -51,18 +112,19 @@ def health_check():
         "status": "ok",
         "message": "SenSante API is running"
     }
-import joblib
-import numpy as np
 
-# --- Charger le modele et les encodeurs au demarrage ---
-print(" Chargement du modele ... ")
-model = joblib.load("models/model.pkl")
-le_sexe = joblib.load("models/encoder_sexe.pkl")
-le_region = joblib.load("models/encoder_region.pkl")
-feature_cols = joblib.load("models/feature_cols.pkl")
+@app.get("/model-info")
+def get_model_info():
+    """Affiche les informations sur le modèle de Machine Learning."""
+    if not model:
+        return {"erreur": "Modèle non chargé"}
+    return {
+        "model_type": "RandomForestClassifier",
+        "n_estimators": getattr(model, 'n_estimators', 'Inconnu'),
+        "classes": model.classes_.tolist() if hasattr(model, 'classes_') else [],
+        "n_features": getattr(model, 'n_features_in_', 'Inconnu')
+    }
 
-print(f" Modele charge : {type(model).__name__}")
-print(f" Classes : {list(model.classes_)}")
 @app.post("/predict", response_model=DiagnosticOutput)
 def predict(patient: PatientInput):
     """
@@ -70,6 +132,14 @@ def predict(patient: PatientInput):
     Reçoit les symptômes en JSON, renvoie le diagnostic,
     la probabilité et une recommandation.
     """
+    if not model or not le_sexe or not le_region:
+         return DiagnosticOutput(
+            diagnostic="erreur",
+            probabilite=0.0,
+            confiance="aucune",
+            message="Le modèle de prédiction n'est pas disponible."
+        )
+        
     # 1. Encoder les variables catégoriques
     try:
         sexe_enc = le_sexe.transform([patient.sexe])[0]
@@ -130,13 +200,48 @@ def predict(patient: PatientInput):
         probabilite=round(proba_max, 2),
         confiance=confiance,
         message=messages.get(diagnostic, "Consultez un médecin.")
-    )  
-@app.get("/model-info")
-def get_model_info():
-    # En supposant que ton modèle s'appelle 'model'
-    return {
-        "model_type": "RandomForestClassifier",
-        "n_estimators": model.n_estimators,
-        "classes": model.classes_.tolist(),
-        "n_features": model.n_features_in_
-    }
+    )
+
+
+SYSTEM_PROMPT = """Tu es un assistant médical sénégalais.
+Tu reçois un diagnostic et des données patient.
+Explique le résultat en français simple,
+comme un médecin parlerait à son patient.
+Sois rassurant mais recommande toujours
+une consultation médicale.
+Maximum 3 phrases.
+Ne fais JAMAIS de diagnostic toi-même.
+Tu expliques uniquement le diagnostic fourni."""
+
+@app.post("/explain", response_model=ExplainOutput)
+def explain(data: ExplainInput):
+    """Expliquer un diagnostic en français avec un LLM."""
+    if not groq_client:
+        return ExplainOutput(
+            explication="Service d'explication indisponible. Clé API non configurée.",
+            modele_llm="aucun"
+        )
+
+    # Construire le user prompt
+    user_prompt = (
+        f"Patient : {data.sexe}, {data.age} ans, région {data.region}\n"
+        f"Température : {data.temperature}°C\n"
+        f"Diagnostic du modèle : {data.diagnostic} (probabilité {data.probabilite:.0%})\n"
+        f"Explique ce résultat au patient."
+    )
+
+    try:
+        response = groq_client.chat.completions.create(
+            model="llama-3.1-8b-instant",
+            messages=[
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": user_prompt}
+            ],
+            max_tokens=200,
+            temperature=0.3
+        )
+        explication = response.choices[0].message.content
+    except Exception as e:
+        explication = f"Erreur lors de l'appel au LLM : {str(e)}"
+
+    return ExplainOutput(explication=explication)
