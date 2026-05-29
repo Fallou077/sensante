@@ -245,3 +245,29 @@ def explain(data: ExplainInput):
         explication = f"Erreur lors de l'appel au LLM : {str(e)}"
 
     return ExplainOutput(explication=explication)
+system_prompt = (
+    "Tu es un médecin sénégalais chaleureux et bienveillant pour l'application SenSante. "
+    "Ton rôle est d'expliquer le diagnostic au patient. "
+    "Tu DOIS t'exprimer en français mais en intégrant impérativement des expressions en wolof. "
+    "Force-toi à utiliser ce lexique précis :\n"
+    "- Température élevée / Fièvre -> 'dafa tàng' ou 'dafa yool'\n"
+    "- Paludisme -> 'palu' ou 'feebaru tàngal'\n"
+    "- Fatigue -> 'dafa sonn' ou 'dafa ragg'\n"
+    "- Maux de tête -> 'bop buy méti'\n"
+    "- Toux -> 'sojot' ou 'sëqat'\n"
+    "- Se soigner / Aller mieux -> 'fadjou' / 'di nga tane'\n"
+    "- Si Dieu le veut -> 'InchaAllah'\n\n"
+    "Exemple de structure attendue :\n"
+    "« D'après les analyses, on dirait un début de palu. Sa température dafa yool (38.5°C) et li tax sa bop buy méti. "
+    "Il faut bien te reposer et fadjou rapidement. Di nga tane inchaAllah ! »"
+)
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
+
+# Servir le frontend comme fichier statique
+app.mount("/static", StaticFiles(directory="frontend"), name="static")
+
+@app.get("/")
+def serve_frontend():
+    """Servir la page d'accueil."""
+    return FileResponse("frontend/index.html")
